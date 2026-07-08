@@ -5,8 +5,9 @@ import cors from 'cors'
 const {
   ALLOWED_ORIGIN = '*',
   PORT = 3001,
-  // Google Chat incoming webhook — enquiries are announced here. Override in .env.
-  GOOGLE_CHAT_WEBHOOK = 'https://chat.googleapis.com/v1/spaces/AAQALLf3K9M/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=3rbnx-SflAPM1GYkqK7El2OTIz427QInoyx_g1V8awA',
+  // Google Chat incoming webhook — enquiries are announced here. Set in backend/.env.
+  // When unset, Chat notifications are skipped (enquiries are still saved to the form).
+  GOOGLE_CHAT_WEBHOOK = '',
 } = process.env
 
 // ── Google Form ──────────────────────────────────────────────────────────────
@@ -40,17 +41,22 @@ const isMobile = (value) => /^[6-9][0-9]{9}$/.test(value)
 
 // Post a formatted alert to Google Chat. Best-effort: never throws — a failed
 // notification must not fail the enquiry, which is already saved in the form.
-async function notifyGoogleChat({ name, mobile, email, description }) {
+async function notifyGoogleChat({ name, business, mobile, email, website, socials, help, preferred, description }) {
   if (!GOOGLE_CHAT_WEBHOOK) return
   const submittedAt = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
   const text = [
-    '*New contact enquiry — BrandSethu*',
+    '*New enquiry — Brandsethu*',
     '',
     `*Name :* ${name}`,
+    `*Business :* ${business || '—'}`,
     `*Mobile :* ${mobile}`,
     `*Email :* ${email || '—'}`,
+    `*Needs help with :* ${help || '—'}`,
+    `*Preferred contact :* ${preferred || '—'}`,
+    `*Website :* ${website || '—'}`,
+    `*Socials :* ${socials || '—'}`,
     '',
-    `*Description :* ${description}`,
+    `*Requirement :* ${description}`,
     '',
     `_${submittedAt} IST_`,
   ].join('\n')
@@ -70,25 +76,47 @@ async function notifyGoogleChat({ name, mobile, email, description }) {
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
 app.post('/api/contact', async (req, res) => {
-  const { name = '', mobile = '', email = '', description = '' } = req.body || {}
+  const {
+    name = '',
+    business = '',
+    email = '',
+    mobile = '',
+    website = '',
+    socials = '',
+    help = '',
+    description = '',
+    preferred = '',
+  } = req.body || {}
 
-  // Server-side validation — mirror the Google Form's own rules.
-  if (!name.trim() || !mobile.trim() || !description.trim()) {
-    return res.status(400).json({ error: 'Name, mobile number and description are required.' })
+  // Server-side validation — mirror the contact form's required fields.
+  if (!name.trim() || !mobile.trim() || !email.trim() || !description.trim()) {
+    return res.status(400).json({ error: 'Name, email, mobile number and requirement are required.' })
   }
   if (!isMobile(mobile.trim())) {
     return res.status(400).json({ error: 'Please provide a valid 10-digit mobile number.' })
   }
-  if (email.trim() && !isEmail(email.trim())) {
+  if (!isEmail(email.trim())) {
     return res.status(400).json({ error: 'Please provide a valid email address.' })
   }
+
+  // The Google Form only has name/mobile/email/description entries, so fold the
+  // extra fields into the description so nothing is lost.
+  const extra = []
+  if (business.trim()) extra.push(`Business/Brand: ${business.trim()}`)
+  if (help.trim()) extra.push(`Needs help with: ${help.trim()}`)
+  if (preferred.trim()) extra.push(`Preferred contact: ${preferred.trim()}`)
+  if (website.trim()) extra.push(`Website: ${website.trim()}`)
+  if (socials.trim()) extra.push(`Socials: ${socials.trim()}`)
+  const composedDescription = extra.length
+    ? `${description.trim()}\n\n———\n${extra.join('\n')}`
+    : description.trim()
 
   // Build the form-encoded body Google expects.
   const body = new URLSearchParams()
   body.append(FORM_ENTRIES.name, name.trim())
   body.append(FORM_ENTRIES.mobile, mobile.trim())
-  if (email.trim()) body.append(FORM_ENTRIES.email, email.trim())
-  body.append(FORM_ENTRIES.description, description.trim())
+  body.append(FORM_ENTRIES.email, email.trim())
+  body.append(FORM_ENTRIES.description, composedDescription)
 
   try {
     const gRes = await fetch(GOOGLE_FORM_ACTION, {
@@ -106,8 +134,13 @@ app.post('/api/contact', async (req, res) => {
     // Fire the Google Chat alert (best-effort — won't block or fail the response).
     await notifyGoogleChat({
       name: name.trim(),
+      business: business.trim(),
       mobile: mobile.trim(),
       email: email.trim(),
+      website: website.trim(),
+      socials: socials.trim(),
+      help: help.trim(),
+      preferred: preferred.trim(),
       description: description.trim(),
     })
 
